@@ -7,6 +7,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
@@ -20,6 +21,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"go/version"
 	"io"
 	"io/fs"
 	"log"
@@ -40,7 +42,6 @@ import (
 	"golang.org/x/exp/maps"
 	"golang.org/x/exp/slices"
 	"golang.org/x/mod/module"
-	"golang.org/x/mod/semver"
 	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/go/ssa"
 	"mvdan.cc/garble/internal/ctrlflow"
@@ -267,47 +268,36 @@ type errJustExit int
 func (e errJustExit) Error() string { return fmt.Sprintf("exit: %d", e) }
 
 func goVersionOK() bool {
-	// TODO(mvdan): use go/version once we can require Go 1.22 or later: https://go.dev/issue/62039
-	const (
-		minGoVersionSemver = "v1.21.0"
-		suggestedGoVersion = "1.21"
-	)
+	const minGoVersion = "go1.22"
 
-	// rxVersion looks for a version like "go1.2" or "go1.2.3"
+	// rxVersion looks for a version like "go1.2" or "go1.2.3" in `go env GOVERSION`.
 	rxVersion := regexp.MustCompile(`go\d+\.\d+(?:\.\d+)?`)
 
 	toolchainVersionFull := sharedCache.GoEnv.GOVERSION
-	toolchainVersion := rxVersion.FindString(toolchainVersionFull)
-	if toolchainVersion == "" {
-		// Go 1.15.x and older do not have GOVERSION yet.
-		// We could go the extra mile and fetch it via 'go toolchainVersion',
-		// but we'd have to error anyway.
-		fmt.Fprintf(os.Stderr, "Go version is too old; please upgrade to Go %s or newer\n", suggestedGoVersion)
+	sharedCache.GoVersion = rxVersion.FindString(toolchainVersionFull)
+	if sharedCache.GoVersion == "" {
+		// Go 1.15.x and older did not have GOVERSION yet; they are too old anyway.
+		fmt.Fprintf(os.Stderr, "Go version is too old; please upgrade to %s or newer\n", minGoVersion)
 		return false
 	}
 
-	sharedCache.GoVersionSemver = "v" + strings.TrimPrefix(toolchainVersion, "go")
-	if semver.Compare(sharedCache.GoVersionSemver, minGoVersionSemver) < 0 {
-		fmt.Fprintf(os.Stderr, "Go version %q is too old; please upgrade to Go %s or newer\n", toolchainVersionFull, suggestedGoVersion)
+	if version.Compare(sharedCache.GoVersion, minGoVersion) < 0 {
+		fmt.Fprintf(os.Stderr, "Go version %q is too old; please upgrade to %s or newer\n", toolchainVersionFull, minGoVersion)
 		return false
 	}
 
 	// Ensure that the version of Go that built the garble binary is equal or
 	// newer than cache.GoVersionSemver.
-	builtVersionFull := os.Getenv("GARBLE_TEST_GOVERSION")
-	if builtVersionFull == "" {
-		builtVersionFull = runtime.Version()
-	}
+	builtVersionFull := cmp.Or(os.Getenv("GARBLE_TEST_GOVERSION"), runtime.Version())
 	builtVersion := rxVersion.FindString(builtVersionFull)
 	if builtVersion == "" {
 		// If garble built itself, we don't know what Go version was used.
 		// Fall back to not performing the check against the toolchain version.
 		return true
 	}
-	builtVersionSemver := "v" + strings.TrimPrefix(builtVersion, "go")
-	if semver.Compare(builtVersionSemver, sharedCache.GoVersionSemver) < 0 {
+	if version.Compare(builtVersion, sharedCache.GoVersion) < 0 {
 		fmt.Fprintf(os.Stderr, `
-garble was built with %q and is being used with %q; rebuild it with a command like:
+garble was built with %q and can't be used with the newer %q; rebuild it with a command like:
     go install mvdan.cc/garble@latest
 `[1:], builtVersionFull, toolchainVersionFull)
 		return false
@@ -1735,7 +1725,7 @@ func recordType(used, origin types.Type, done map[*types.Named]bool, fieldToStru
 		recordType(used.Underlying(), used.Origin().Underlying(), done, fieldToStruct)
 	case *types.Struct:
 		origin := origin.(*types.Struct)
-		for i := 0; i < used.NumFields(); i++ {
+		for i := range used.NumFields() {
 			field := used.Field(i)
 			fieldToStruct[field] = origin
 
@@ -2391,9 +2381,6 @@ To install Go, see: https://go.dev/doc/install
 	if err := json.Unmarshal(out, &sharedCache.GoEnv); err != nil {
 		return fmt.Errorf(`cannot unmarshal from "go env -json": %w`, err)
 	}
-	sharedCache.GOGARBLE = os.Getenv("GOGARBLE")
-	if sharedCache.GOGARBLE == "" {
-		sharedCache.GOGARBLE = "*" // we default to obfuscating everything
-	}
+	sharedCache.GOGARBLE = cmp.Or(os.Getenv("GOGARBLE"), "*") // we default to obfuscating everything
 	return nil
 }
