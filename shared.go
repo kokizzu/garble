@@ -20,7 +20,7 @@ import (
 	"golang.org/x/mod/module"
 )
 
-//go:generate ./scripts/gen-go-std-tables.sh
+//go:generate go run scripts/gen_go_std_tables.go
 
 // sharedCacheType is shared as a read-only cache between the many garble toolexec
 // sub-processes.
@@ -191,7 +191,7 @@ func (p *listedPackage) obfuscatedImportPath() string {
 		return p.ImportPath
 	}
 	// Intrinsics are matched by package import path as well.
-	if compilerIntrinsicsPkgs[p.ImportPath] {
+	if _, ok := compilerIntrinsics[p.ImportPath]; ok {
 		return p.ImportPath
 	}
 	if !p.ToObfuscate {
@@ -231,7 +231,7 @@ func appendListedPackages(packages []string, mainBuild bool) error {
 		// However, when loading standard library packages,
 		// using those flags would likely result in an error,
 		// as the standard library uses its own Go module and vendoring.
-		args = append(args, "-mod=", "-modfile=")
+		args = append(args, "-mod=readonly", "-modfile=")
 	}
 
 	args = append(args, packages...)
