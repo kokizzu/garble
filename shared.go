@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -59,7 +60,8 @@ type sharedCacheType struct {
 	// Filled directly from "go env".
 	// Keep in sync with fetchGoEnv.
 	GoEnv struct {
-		GOOS string // i.e. the GOOS build target
+		GOOS   string // the GOOS build target
+		GOARCH string // the GOARCH build target
 
 		GOMOD     string
 		GOVERSION string
@@ -231,7 +233,9 @@ func appendListedPackages(packages []string, mainBuild bool) error {
 		// However, when loading standard library packages,
 		// using those flags would likely result in an error,
 		// as the standard library uses its own Go module and vendoring.
-		args = append(args, "-mod=readonly", "-modfile=")
+		args = slices.DeleteFunc(args, func(arg string) bool {
+			return strings.HasPrefix(arg, "-mod=") || strings.HasPrefix(arg, "-modfile=")
+		})
 	}
 
 	args = append(args, packages...)
@@ -265,10 +269,13 @@ func appendListedPackages(packages []string, mainBuild bool) error {
 		}
 
 		if perr := pkg.Error; perr != nil {
-			if pkg.Standard && len(pkg.CompiledGoFiles) == 0 && len(pkg.IgnoredGoFiles) > 0 {
+			if !mainBuild && len(pkg.CompiledGoFiles) == 0 && len(pkg.IgnoredGoFiles) > 0 {
 				// Some packages in runtimeLinknamed need a build tag to be importable,
 				// like crypto/internal/boring/fipstls with boringcrypto,
 				// so any pkg.Error should be ignored when the build tag isn't set.
+			} else if !mainBuild && strings.Contains(perr.Err, "is not in std") {
+				// When we support multiple Go versions at once, some packages may only
+				// exist in the newer version, so we fail to list them with the older.
 			} else {
 				if pkgErrors.Len() > 0 {
 					pkgErrors.WriteString("\n")
