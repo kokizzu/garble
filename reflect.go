@@ -11,7 +11,8 @@ import (
 )
 
 type reflectInspector struct {
-	pkg *types.Package
+	lpkg *listedPackage
+	pkg  *types.Package
 
 	checkedAPIs map[string]bool
 
@@ -189,13 +190,13 @@ func (ri *reflectInspector) checkFunction(fun *ssa.Function) {
 			switch inst := inst.(type) {
 			case *ssa.Store:
 				obj := typeToObj(inst.Addr.Type())
-				if usedForReflect(ri.result, obj) {
+				if obj != nil && ri.usedForReflect(ri.result, obj) {
 					ri.recordArgReflected(inst.Val, make(map[ssa.Value]bool))
 					ri.propagatedInstr[inst] = true
 				}
 			case *ssa.ChangeType:
 				obj := typeToObj(inst.X.Type())
-				if usedForReflect(ri.result, obj) {
+				if obj != nil && ri.usedForReflect(ri.result, obj) {
 					ri.recursivelyRecordUsedForReflect(inst.Type(), nil)
 					ri.propagatedInstr[inst] = true
 				}
@@ -395,7 +396,7 @@ func (ri *reflectInspector) recursivelyRecordUsedForReflect(t types.Type, parent
 		if obj.Pkg() == nil || obj.Pkg() != ri.pkg {
 			return // not from the specified package
 		}
-		if usedForReflect(ri.result, obj) {
+		if ri.usedForReflect(ri.result, obj) {
 			return // prevent endless recursion
 		}
 		ri.recordUsedForReflect(obj, parent)
@@ -464,44 +465,43 @@ func recordedObjectString(obj types.Object) objectString {
 	return pkg.Path() + "." + obj.Name()
 }
 
-// reflectedObjectString returns the obfucated name of a types.Object,
+// obfuscatedObjectName returns the obfucated name of a types.Object,
 // parent is needed to correctly get the obfucated name of struct fields
-func reflectedObjectString(obj types.Object, parent *types.Struct) string {
-	if obj == nil {
-		return ""
-	}
+func (ri *reflectInspector) obfuscatedObjectName(obj types.Object, parent *types.Struct) string {
 	pkg := obj.Pkg()
 	if pkg == nil {
-		return ""
+		return "" // builtin types are never obfuscated
 	}
 
 	if v, ok := obj.(*types.Var); ok && parent != nil {
 		return hashWithStruct(parent, v)
 	}
 
-	lpkg := sharedCache.ListedPackages[obj.Pkg().Path()]
-	return hashWithPackage(lpkg, obj.Name())
+	return hashWithPackage(ri.lpkg, obj.Name())
 }
 
 // recordUsedForReflect records the objects whose names we cannot obfuscate due to reflection.
 // We currently record named types and fields.
 func (ri *reflectInspector) recordUsedForReflect(obj types.Object, parent *types.Struct) {
-	if obj.Pkg().Path() != ri.pkg.Path() {
+	if obj.Pkg() != ri.pkg {
 		panic("called recordUsedForReflect with a foreign object")
 	}
-	objStr := reflectedObjectString(obj, parent)
-	if objStr == "" {
+	obfName := ri.obfuscatedObjectName(obj, parent)
+	if obfName == "" {
 		return
 	}
-	ri.result.ReflectObjectNames[objStr] = obj.Name()
+	ri.result.ReflectObjectNames[obfName] = obj.Name()
 }
 
-func usedForReflect(cache pkgCache, obj types.Object) bool {
-	objStr := reflectedObjectString(obj, nil)
-	if objStr == "" {
+func (ri *reflectInspector) usedForReflect(cache pkgCache, obj types.Object) bool {
+	obfName := ri.obfuscatedObjectName(obj, nil)
+	if obfName == "" {
 		return false
 	}
-	_, ok := cache.ReflectObjectNames[objStr]
+	// TODO: Note that this does an object lookup by obfuscated name.
+	// We should probably use unique object identifiers or strings,
+	// such as go/types/objectpath.
+	_, ok := cache.ReflectObjectNames[obfName]
 	return ok
 }
 
